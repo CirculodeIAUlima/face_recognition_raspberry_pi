@@ -4,7 +4,7 @@ from datetime import datetime
 import time
 
 # Change this to the name of the person you're photographing
-PERSON_NAME = "ignacio_de_jesus"
+PERSON_NAME = "juler_hermitano"
 
 def create_folder(name):
     dataset_folder = "dataset"

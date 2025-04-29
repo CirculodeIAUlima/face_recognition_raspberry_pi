@@ -49,6 +49,7 @@ def process_frame(frame):
         if matches[best_match_index]:
             name = known_face_names[best_match_index]
         face_names.append(name)
+        print(f"[DETECTED] {name}")
 
     return frame
 

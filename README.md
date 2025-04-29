@@ -18,9 +18,9 @@ pip install -r requirements.txt
 
 # Files Order
 
-- image_capture_windows
-- model_training_windows
-- facial_recognition_windows
+- image_capture_webcam
+- model_training
+- facial_recognition_webcam
 - facial_recognition_hardware_windows
 
 

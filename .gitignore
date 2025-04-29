@@ -1,0 +1,11 @@
+.env
+.DS_Store
+encodings.pickle
+
+dataset/*
+!dataset/
+!dataset/.gitkeep
+
+exported_unknown_videos/*
+!exported_unknown_videos/
+!exported_unknown_videos/.gitkeep
