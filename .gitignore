@@ -9,3 +9,6 @@ dataset/*
 exported_unknown_videos/*
 !exported_unknown_videos/
 !exported_unknown_videos/.gitkeep
+
+./attendance_semana_*.csv
+./attendance_completo_*.csv
