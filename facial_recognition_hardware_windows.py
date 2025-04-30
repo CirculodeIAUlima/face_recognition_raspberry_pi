@@ -6,7 +6,7 @@ import tempfile
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Thread, Timer
+from threading import Thread
 from collections import deque
 from dotenv import load_dotenv
 
@@ -20,27 +20,40 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
+# ────────────────────────────  CARGAR .env
 load_dotenv()
 
-COOLDOWN          = timedelta(minutes=3)
-TMP_DIR           = Path(tempfile.gettempdir())
-BASE_DIR          = Path(__file__).resolve().parent
-PERU_TZ           = ZoneInfo("America/Lima")
+# ────────────────────────────  VALIDACIÓN DE CREDENCIALES BD
+required_db = ["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DBNAME"]
+missing_db = [v for v in required_db if not os.getenv(v)]
+if missing_db:
+    raise RuntimeError(f"Entorno incompleto, faltan: {', '.join(missing_db)}")
 
-TOLERANCE   = float(os.getenv("FR_TOLERANCE", 0.45))
-DETECTOR    = os.getenv("FR_DET_MODEL",  "hog")
-FRAME_SCALE = int  (os.getenv("FR_SCALE",       4))
-VOTE_LEN    = int  (os.getenv("FR_VOTE_FRAMES", 3))
+# ────────────────────────────  PARÁMETROS DE CONFIGURACIÓN
+ATTENDANCE_COOLDOWN = timedelta(minutes=3)
+UNKNOWN_COOLDOWN    = timedelta(seconds=7)
+
+TMP_DIR = Path(tempfile.gettempdir())
+BASE_DIR = Path(__file__).resolve().parent
+PERU_TZ  = ZoneInfo("America/Lima")
+
+# Tuning parameters (no defaults here if you prefer full env control)
+TOLERANCE   = float(os.getenv("FR_TOLERANCE"))
+DETECTOR    = os.getenv("FR_DET_MODEL")
+FRAME_SCALE = int(os.getenv("FR_SCALE"))
+VOTE_LEN    = int(os.getenv("FR_VOTE_FRAMES"))
 recent_names: deque[str] = deque(maxlen=VOTE_LEN)
 
-DB_PARAMS = dict(
-    host     = os.getenv("PG_HOST", "localhost"),
-    port     = int(os.getenv("PG_PORT", 5432)),
-    user     = os.getenv("PG_USER", "postgres"),
-    password = os.getenv("PG_PASSWORD", "root"),
-    dbname   = os.getenv("PG_DBNAME", "attendance_db"),
-)
+# ────────────────────────────  PARÁMETROS DE BASE DE DATOS
+DB_PARAMS = {
+    "host":     os.getenv("PG_HOST"),
+    "port":     int(os.getenv("PG_PORT")),
+    "user":     os.getenv("PG_USER"),
+    "password": os.getenv("PG_PASSWORD"),
+    "dbname":   os.getenv("PG_DBNAME"),
+}
 
+# ────────────────────────────  CREAR TABLAS SI NO EXISTEN
 SQL_ATTENDANCE = """
 CREATE TABLE IF NOT EXISTS attendance(
     id SERIAL PRIMARY KEY,
@@ -63,6 +76,7 @@ with conn.cursor() as cur:
     cur.execute(SQL_ATTENDANCE)
     cur.execute(SQL_UNKNOWN)
 
+# ────────────────────────────  FUNCIONES AUXILIARES
 def last_record(name: str):
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(
@@ -82,34 +96,41 @@ def add_record(name: str, rec_type: str, ts: datetime):
     status = "entrada" if rec_type == "IN" else "salida"
     speak(f"{ts:%Y-%m-%d %H:%M:%S}  {name}  {status} registrada.")
 
-def save_unknown_video(mp4_path: Path):
+def save_unknown_video(mp4_path: Path) -> int:
     with open(mp4_path, "rb") as f, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO unknown_videos(ts, mp4) VALUES(%s, %s);",
+            """
+            INSERT INTO unknown_videos (ts, mp4)
+            VALUES (%s, %s)
+            RETURNING id;
+            """,
             (datetime.now(timezone.utc), psycopg2.Binary(f.read())),
         )
-    speak("Vídeo de usuario desconocido guardado en la base de datos.")
+        return cur.fetchone()[0]
 
-def record_unknown(cam, seconds: int = 3):
+def record_unknown(cam, seconds: int = 5):
     tmp = TMP_DIR / f"unknown_{datetime.now():%Y%m%d_%H%M%S}.mp4"
     fps = cam.get(cv2.CAP_PROP_FPS) or 20
-    w   = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h   = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    vw  = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+    w = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    vw = cv2.VideoWriter(str(tmp), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     end = time.time() + seconds
     while time.time() < end:
         ok, fr = cam.read()
         if ok:
             vw.write(fr)
     vw.release()
-    save_unknown_video(tmp)
+
+    video_id = save_unknown_video(tmp)
     tmp.unlink(missing_ok=True)
+    subprocess.Popen(
+        [sys.executable, str(BASE_DIR / "export_single_video.py"), str(video_id)]
+    )
 
 engine = pyttsx3.init()
-for v in engine.getProperty("voices"):
-    if "es" in v.id.lower() or "spanish" in v.name.lower():
-        engine.setProperty("voice", v.id)
-        break
+engine.setProperty("rate", 250)
+engine.setProperty("volume", 1.0)
+engine.setProperty('voice', engine.getProperty('voices')[0].id)
 
 def speak(msg: str):
     print(msg)
@@ -118,9 +139,8 @@ def speak(msg: str):
 
 with open("encodings.pickle", "rb") as f:
     enc_data = pickle.load(f)
-known_encs   = enc_data["encodings"]
-known_names  = enc_data["names"]
-authorized   = set(known_names)
+known_encs  = enc_data["encodings"]
+known_names = enc_data["names"]
 
 def run_script(script_name: str):
     subprocess.Popen([sys.executable, str(BASE_DIR / script_name)])
@@ -128,84 +148,78 @@ def run_script(script_name: str):
 def schedule_weekly_reports():
     sched = BackgroundScheduler()
     trigger = CronTrigger(
-        day_of_week="thu",
-        hour=12,
-        minute=20,
-        timezone=PERU_TZ,
+        day_of_week="sun", hour=11, minute=0, timezone=PERU_TZ
     )
     sched.add_job(run_script, trigger, args=("automatically_send_weekly_reports.py",))
     sched.start()
     return sched
 
-def export_videos_delayed(delay_seconds: int = 15):
-    Timer(delay_seconds, run_script, args=("export_videos.py",)).start()
-
+# ────────────────────────────  BUCLE PRINCIPAL
 cam = cv2.VideoCapture(0)
-face_locs = face_names = []
 fps = cnt = 0
 t0 = time.time()
 last_unknown_ts = datetime.min.replace(tzinfo=timezone.utc)
-
 scheduler = schedule_weekly_reports()
 
 try:
     while True:
         ok, frame = cam.read()
         if not ok:
-            speak("Error de cámara."); break
+            speak("Error de cámara.")
+            break
 
-        small = cv2.resize(frame, (0, 0), fx=1/FRAME_SCALE, fy=1/FRAME_SCALE)
+        small = cv2.resize(frame, (0,0), fx=1/FRAME_SCALE, fy=1/FRAME_SCALE)
         rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        face_locs = face_recognition.face_locations(rgb, model=DETECTOR)
-        face_encs = face_recognition.face_encodings(rgb, face_locs, model="large")
-        face_names = []
+        locs  = face_recognition.face_locations(rgb, model=DETECTOR)
+        encs  = face_recognition.face_encodings(rgb, locs, model="large")
+        names = []
 
         now = datetime.now(timezone.utc)
-        for enc in face_encs:
+        for enc in encs:
             dists = face_recognition.face_distance(known_encs, enc)
-            idx = int(np.argmin(dists))
+            idx   = int(np.argmin(dists))
             match = dists[idx] <= TOLERANCE
-            name = known_names[idx] if match else "Desconocido"
-            face_names.append(name)
+            name  = known_names[idx] if match else "Desconocido"
+            names.append(name)
 
             recent_names.append(name)
-            if len(recent_names) == VOTE_LEN and len(set(recent_names)) == 1:
-                voted_name = recent_names[0]
-            else:
-                voted_name = None
+            voted = (recent_names[0]
+                     if len(recent_names)==VOTE_LEN and len(set(recent_names))==1
+                     else None)
 
-            if voted_name == "Desconocido":
-                if now - last_unknown_ts >= COOLDOWN:
+            if voted == "Desconocido":
+                if now - last_unknown_ts >= UNKNOWN_COOLDOWN:
                     last_unknown_ts = now
-                    speak("Usuario desconocido, por favor busque a Juler y regístrese.")
+                    speak("Usuario desconocido, intente nuevamente.")
                     Thread(target=record_unknown, args=(cam,)).start()
-                    export_videos_delayed(15)
                 continue
 
-            if voted_name and voted_name != "Desconocido":
-                last_type, last_ts = last_record(voted_name)
-                if last_ts is None or now - last_ts >= COOLDOWN:
+            if voted:
+                last_type, last_ts = last_record(voted)
+                if last_ts is None or now - last_ts >= ATTENDANCE_COOLDOWN:
                     next_type = "IN" if last_type in (None, "OUT") else "OUT"
-                    add_record(voted_name, next_type, now)
+                    add_record(voted, next_type, now)
 
-        for (t, r, b, l), nm in zip(face_locs, face_names):
+        # dibujar recuadros y nombres
+        for (t,r,b,l), nm in zip(locs, names):
             t*=FRAME_SCALE; r*=FRAME_SCALE; b*=FRAME_SCALE; l*=FRAME_SCALE
-            cv2.rectangle(frame, (l, t), (r, b), (0, 140, 255), 2)
-            cv2.rectangle(frame, (l, b-25), (r, b), (0, 140, 255), cv2.FILLED)
-            cv2.putText(frame, nm, (l+6, b-6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            cv2.rectangle(frame, (l,t), (r,b), (0,140,255), 2)
+            cv2.rectangle(frame, (l,b-25), (r,b), (0,140,255), cv2.FILLED)
+            cv2.putText(frame, nm, (l+6,b-6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255,255,255), 1)
 
         cnt += 1
         if time.time() - t0 >= 1:
             fps = cnt / (time.time() - t0)
             cnt = 0
             t0  = time.time()
-        cv2.putText(frame, f"FPS:{fps:.1f}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, f"FPS:{fps:.1f}", (10,30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
 
         cv2.imshow("Attendance", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
 finally:
     cam.release()
     cv2.destroyAllWindows()
