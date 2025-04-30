@@ -184,8 +184,8 @@ try:
 
             recent_names.append(name)
             voted = (recent_names[0]
-                     if len(recent_names)==VOTE_LEN and len(set(recent_names))==1
-                     else None)
+                    if len(recent_names)==VOTE_LEN and len(set(recent_names))==1
+                    else None)
 
             if voted == "Desconocido":
                 if now - last_unknown_ts >= UNKNOWN_COOLDOWN:

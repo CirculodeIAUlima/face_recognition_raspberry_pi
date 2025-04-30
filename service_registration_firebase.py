@@ -46,9 +46,9 @@ bucket = storage.bucket()
 def last_record(name: str):
     q = (
         db.collection("attendance")
-          .where("person", "==", name)
-          .order_by("ts", direction=firestore.Query.DESCENDING)
-          .limit(1)
+            .where("person", "==", name)
+            .order_by("ts", direction=firestore.Query.DESCENDING)
+            .limit(1)
     )
     docs = list(q.stream())
     if not docs:
