@@ -16,6 +16,7 @@ import face_recognition
 import psycopg2
 import psycopg2.extras
 import pyttsx3
+import platform
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
@@ -130,7 +131,16 @@ def record_unknown(cam, seconds: int = 5):
 engine = pyttsx3.init()
 engine.setProperty("rate", 250)
 engine.setProperty("volume", 1.0)
-engine.setProperty('voice', engine.getProperty('voices')[0].id)
+if platform.system().lower() == "darwin":
+    desired_voice_id = "com.apple.voice.compact.es-MX.Paulina"
+    for voice in engine.getProperty("voices"):
+        if voice.id == desired_voice_id:
+            engine.setProperty("voice", voice.id)
+            break
+    else:
+        print("⚠️ Voz Paulina no encontrada. Usando la voz por defecto.")
+else:
+    engine.setProperty('voice', engine.getProperty('voices')[0].id)
 
 def speak(msg: str):
     print(msg)
