@@ -3,7 +3,6 @@ import sys
 import time
 import pickle
 import tempfile
-import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Thread
@@ -16,10 +15,12 @@ import face_recognition
 import pyttsx3
 import firebase_admin
 from firebase_admin import credentials, firestore, storage
+from google.cloud.firestore_v1 import FieldFilter
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from zoneinfo import ZoneInfo
 
+# ────────────────────────────  ENV & CONSTANTES
 load_dotenv()
 
 ATTENDANCE_COOLDOWN = timedelta(minutes=3)
@@ -34,6 +35,7 @@ FRAME_SCALE = int  (os.getenv("FR_SCALE",       4))
 VOTE_LEN    = int  (os.getenv("FR_VOTE_FRAMES", 3))
 recent_names: deque[str] = deque(maxlen=VOTE_LEN)
 
+# ────────────────────────────  FIREBASE INIT
 cred = credentials.Certificate(os.getenv("FIREBASE_SA_PATH"))
 firebase_admin.initialize_app(
     cred,
@@ -43,14 +45,16 @@ firebase_admin.initialize_app(
 db     = firestore.client()
 bucket = storage.bucket()
 
+# ────────────────────────────  DB HELPERS
 def last_record(name: str):
-    q = (
+    docs = (
         db.collection("attendance")
-            .where("person", "==", name)
-            .order_by("ts", direction=firestore.Query.DESCENDING)
-            .limit(1)
+          .where(filter=FieldFilter("person", "==", name))
+          .order_by("ts", direction=firestore.Query.DESCENDING)
+          .limit(1)
+          .stream()
     )
-    docs = list(q.stream())
+    docs = list(docs)
     if not docs:
         return None, None
     d = docs[0].to_dict()
@@ -63,18 +67,20 @@ def add_record(name: str, rec_type: str, ts: datetime):
     status = "entrada" if rec_type == "IN" else "salida"
     speak(f"{ts:%Y-%m-%d %H:%M:%S}  {name}  {status} registrada.")
 
-def save_unknown_video(mp4_path: Path) -> str:
-    blob = bucket.blob(f"unknown_videos/{mp4_path.name}")
+def save_unknown_video(mp4_path: Path) -> None:
+    blob_name = f"unknown_videos/{mp4_path.name}"
+    blob = bucket.blob(blob_name)
     blob.upload_from_filename(mp4_path)
-    doc_ref = db.collection("unknown_videos").add(
+
+    db.collection("unknown_videos").add(
         {
             "ts": datetime.now(timezone.utc),
-            "gcs_uri": blob.public_url
+            "gcs_uri": f"gs://{bucket.name}/{blob_name}"
         }
     )
-    return doc_ref[1].id
 
-def record_unknown(cam, seconds: int = 5):
+# ────────────────────────────  VIDEO THREAD
+def record_unknown(cam, seconds: int = 3):
     tmp = TMP_DIR / f"unknown_{datetime.now():%Y%m%d_%H%M%S}.mp4"
     fps = cam.get(cv2.CAP_PROP_FPS) or 20
     w   = int(cam.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -87,13 +93,10 @@ def record_unknown(cam, seconds: int = 5):
             vw.write(fr)
     vw.release()
 
-    video_id = save_unknown_video(tmp)
-    tmp.unlink(missing_ok=True)
+    save_unknown_video(tmp)
+    tmp.unlink(missing_ok=True)  # elimina el archivo temporal
 
-    subprocess.Popen(
-        [sys.executable, str(BASE_DIR / "export_single_video.py"), str(video_id)]
-    )
-
+# ────────────────────────────  UTILIDADES
 engine = pyttsx3.init()
 engine.setProperty("rate", 250)
 engine.setProperty("volume", 1.0)
@@ -108,10 +111,6 @@ with open("encodings.pickle", "rb") as f:
     enc_data = pickle.load(f)
 known_encs   = enc_data["encodings"]
 known_names  = enc_data["names"]
-authorized   = set(known_names)
-
-def run_script(script_name: str):
-    subprocess.Popen([sys.executable, str(BASE_DIR / script_name)])
 
 def schedule_weekly_reports():
     sched = BackgroundScheduler()
@@ -121,10 +120,11 @@ def schedule_weekly_reports():
         minute=0,
         timezone=PERU_TZ,
     )
-    sched.add_job(run_script, trigger, args=("automatically_send_weekly_reports.py",))
+    # placeholder; add job function if needed
     sched.start()
     return sched
 
+# ────────────────────────────  LOOP PRINCIPAL
 cam = cv2.VideoCapture(0)
 face_locs = face_names = []
 fps = cnt = 0
@@ -159,7 +159,7 @@ try:
                 if now - last_unknown_ts >= UNKNOWN_COOLDOWN:
                     last_unknown_ts = now
                     speak("Usuario desconocido, por favor intente nuevamente.")
-                    Thread(target=record_unknown, args=(cam,)).start()
+                    Thread(target=record_unknown, args=(cam,), daemon=True).start()
                 continue
 
             if voted_name:
