@@ -16,7 +16,11 @@
 # 3. Demostración Visual
 <!-- Inserta capturas, GIFs o video propio; si no hay, enlaza demos del estado del arte -->
 <!-- ![demo](docs/demo.gif) -->
-[Video de demostración de la deteccion de rostros](https://youtu.be/3TUlJrRJUeM?si=NjcLEO5JOYvpf5wN)
+<p align="left">
+  <a href="https://youtu.be/3TUlJrRJUeM">
+    <img src="https://img.youtube.com/vi/3TUlJrRJUeM/0.jpg" alt="Video de demostración de la detección de rostros">
+  </a>
+</p>
 
 # 4. Requisitos Técnicos
 | Componente | Versión recomendada | Notas |
